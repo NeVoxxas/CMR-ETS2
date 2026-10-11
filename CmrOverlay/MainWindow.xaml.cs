@@ -1,23 +1,34 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Windows.Interop;
+using System.IO.Compression;
+using System.Text.RegularExpressions;
 
 namespace CmrOverlay;
 
 public partial class MainWindow : Window
 {
+    // =====================================================================
+    //  NUSTATYMAI
+    // =====================================================================
+    const double FormW = 1654;          // cmr.png plotis (px)
+    const double FormH = 2339;          // cmr.png aukštis (px)
+    const bool ShowBorders = false;     // kalibravimui true, galutinei versijai false
+    const string TelemetryUrl = "http://localhost:25555/api/ets2/telemetry";
+
+    // ---------- Globalus klavišas (F8) ----------
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mod, uint vk);
     const int HotkeyId = 9001;
 
@@ -25,7 +36,8 @@ public partial class MainWindow : Window
     {
         var h = new WindowInteropHelper(this).EnsureHandle();   // veikia ir kai langas paslėptas
         HwndSource.FromHwnd(h).AddHook(WndProc);
-        RegisterHotKey(h, HotkeyId, 0, 0x77);                   // 0x77 = F8
+        if (!RegisterHotKey(h, HotkeyId, 0, 0x77))               // 0x77 = F8
+            Debug.WriteLine("F8 klavišas užimtas, pakeisk 0x77");
     }
 
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -38,12 +50,6 @@ public partial class MainWindow : Window
         }
         return IntPtr.Zero;
     }
-
-    // ---------- Nustatymai ----------
-    const double FormW = 1654;          // cmr.png plotis (px)
-    const double FormH = 2339;          // cmr.png aukštis (px)
-    const bool ShowBorders = false;      // kalibravimui true, galutinei versijai false
-    const string TelemetryUrl = "http://localhost:25555/api/ets2/telemetry";
 
     // ---------- Laukai ----------
     readonly Dictionary<string, TextBox> F = new();
@@ -79,8 +85,87 @@ public partial class MainWindow : Window
         ["Praha"] = "CZ",
         ["Wien"] = "AT"
     };
+
+    // modų aplankai, kuriuose ieškoma miestų (pakeisk pagal save)
+    static readonly string[] ModFolders =
+    {
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                 "Euro Truck Simulator 2", "mod"),
+    // jei modą turi per Steam Workshop, pridėk ir šitą:
+    // @"C:\Program Files (x86)\Steam\steamapps\workshop\content\227300",
+};
+
+    // šalies id iš modo -> kodas (nežinomas id tampa didžiosiomis raidėmis)
+    static readonly Dictionary<string, string> CountryIds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["germany"] = "DE",
+        ["france"] = "FR",
+        ["uk"] = "GB",
+        ["netherlands"] = "NL",
+        ["belgium"] = "BE",
+        ["luxembourg"] = "LU",
+        ["switzerland"] = "CH",
+        ["austria"] = "AT",
+        ["italy"] = "IT",
+        ["spain"] = "ES",
+        ["portugal"] = "PT",
+        ["poland"] = "PL",
+        ["czech"] = "CZ",
+        ["slovakia"] = "SK",
+        ["hungary"] = "HU",
+        ["denmark"] = "DK",
+        ["sweden"] = "SE",
+        ["norway"] = "NO",
+        ["finland"] = "FI",
+        ["estonia"] = "EE",
+        ["latvia"] = "LV",
+        ["lithuania"] = "LT",
+        ["russia"] = "RU"
+    };
+
+    static void LoadModCities()
+    {
+        foreach (var dir in ModFolders)
+        {
+            if (!Directory.Exists(dir)) continue;
+
+            foreach (var file in Directory.EnumerateFiles(dir, "*.*", SearchOption.AllDirectories))
+            {
+                if (!file.EndsWith(".scs", StringComparison.OrdinalIgnoreCase) &&
+                    !file.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) continue;
+                try
+                {
+                    using var zip = ZipFile.OpenRead(file);
+                    foreach (var entry in zip.Entries)
+                    {
+                        var path = entry.FullName.Replace('\\', '/');
+                        if (!path.StartsWith("def/city/", StringComparison.OrdinalIgnoreCase) ||
+                            !path.EndsWith(".sii", StringComparison.OrdinalIgnoreCase)) continue;
+
+                        using var reader = new StreamReader(entry.Open());
+                        var text = reader.ReadToEnd();
+
+                        var ctry = Regex.Match(text, "country:\\s*\"?([\\w.]+)\"?");
+                        if (!ctry.Success) continue;
+                        var id = ctry.Groups[1].Value;
+                        var code = CountryIds.TryGetValue(id, out var c) ? c : id.ToUpperInvariant();
+
+                        var nameMatch = Regex.Match(text, "city_name:\\s*\"([^\"]+)\"");
+                        var name = nameMatch.Success && !nameMatch.Groups[1].Value.StartsWith("@@")
+                            ? nameMatch.Groups[1].Value
+                            : Path.GetFileNameWithoutExtension(path).Replace('_', ' ');
+
+                        Country[name] = code;
+                    }
+                }
+                catch { /* ne ZIP arba sugadintas failas, praleidžiame */ }
+            }
+        }
+    }
+
     static string C(string city) => Country.TryGetValue(city, out var c) ? c : "";
 
+    // Laukai, kuriuos pildai pats (telemetrija jų nelies) – išsaugomi settings.json
     static readonly string[] Saved =
     {
         "carrier", "truckPlate", "instructions", "payment", "special",
@@ -88,17 +173,23 @@ public partial class MainWindow : Window
     };
 
     static readonly string SettingsPath = Path.Combine(AppContext.BaseDirectory, "settings.json");
-    
 
     // ---------- Telemetrija ----------
     static readonly HttpClient http = new();
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     bool wasAttached;
     int attachedTicks;
+    int detachedTicks;
 
     // ---------- Tempimas (Alt + pelė) ----------
     TextBox? drag;
     Point dragOff;
+
+    // ---------- Štampas (24 grafa) ----------
+    Border stamp = null!;
+    TextBlock stampText = null!;
+    bool stampDrag;
+    Point stampOff;
 
     public MainWindow()
     {
@@ -111,6 +202,7 @@ public partial class MainWindow : Window
         Left = area.Left + 10;
 
         BuildForm();
+        BuildStamp();       // turi būti prieš StartTelemetry()
 
         LoadSettings();
         foreach (var k in Saved)
@@ -137,8 +229,17 @@ public partial class MainWindow : Window
             F["loadDate"].Text = DateTime.Now.ToString("yyyy-MM-dd");
             F["goods"].Text = "Pallets";
             F["weight"].Text = "18000";
-            F["truckPlate"].Text = "ABC123";
             F["trailerPlate"].Text = "XYZ789";
+        };
+
+        // Klavišai vietoje mygtukų (veikia, kai CMR langas turi fokusą)
+        PreviewKeyDown += (s, e) =>
+        {
+            bool ctrl = Keyboard.Modifiers == ModifierKeys.Control;
+            if (ctrl && e.Key == Key.P) { Print_Click(this, new RoutedEventArgs()); e.Handled = true; }
+            else if (ctrl && e.Key == Key.S) { Save_Click(this, new RoutedEventArgs()); e.Handled = true; }
+            else if (ctrl && e.Key == Key.Q) { Application.Current.Shutdown(); }
+            else if (e.Key == Key.Escape) { Hide(); e.Handled = true; }
         };
 
         StartTelemetry();
@@ -224,10 +325,100 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    //  MYGTUKAI
+    //  ŠTAMPAS
     // =====================================================================
 
-    void Close_Click(object s, RoutedEventArgs e) => Hide();
+    void BuildStamp()
+    {
+        stampText = new TextBlock
+        {
+            FontFamily = new FontFamily("Arial"),
+            FontSize = 24,
+            FontWeight = FontWeights.Bold,
+            Foreground = Brushes.RoyalBlue,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        stamp = new Border
+        {
+            Width = 360,
+            Height = 100,
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.RoyalBlue,
+            BorderThickness = new Thickness(4),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(6),
+            Opacity = 0.85,
+            Child = stampText,
+            Visibility = Visibility.Hidden,
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = new RotateTransform(-6)
+        };
+        Canvas.SetLeft(stamp, 1130);
+        Canvas.SetTop(stamp, 1830);
+
+        // Alt + tempimas, kad sukalibruotum vietą
+        stamp.PreviewMouseLeftButtonDown += (s, e) =>
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Alt) return;
+            stampDrag = true;
+            var p = e.GetPosition(Form);
+            stampOff = new Point(p.X - Canvas.GetLeft(stamp), p.Y - Canvas.GetTop(stamp));
+            stamp.CaptureMouse();
+            e.Handled = true;
+        };
+        stamp.PreviewMouseMove += (s, e) =>
+        {
+            if (!stampDrag) return;
+            var p = e.GetPosition(Form);
+            Canvas.SetLeft(stamp, p.X - stampOff.X);
+            Canvas.SetTop(stamp, p.Y - stampOff.Y);
+        };
+        stamp.PreviewMouseLeftButtonUp += (s, e) =>
+        {
+            if (!stampDrag) return;
+            stampDrag = false;
+            stamp.ReleaseMouseCapture();
+            Debug.WriteLine($"Stamp: {Canvas.GetLeft(stamp):0}, {Canvas.GetTop(stamp):0}");
+        };
+
+        // Dešinys paspaudimas ant štampo jį nuima
+        stamp.MouseRightButtonDown += (s, e) => stamp.Visibility = Visibility.Hidden;
+
+        // Nematomas spaudžiamas plotas ant 24 grafos: kairys paspaudimas deda štampą
+        var area24 = new System.Windows.Shapes.Rectangle
+        {
+            Width = 450,
+            Height = 300,
+            Fill = Brushes.Transparent
+        };
+        Canvas.SetLeft(area24, 1082);
+        Canvas.SetTop(area24, 1682);
+        area24.MouseLeftButtonDown += (s, e) =>
+        {
+            if (Keyboard.Modifiers == ModifierKeys.Alt) return;
+            var p = e.GetPosition(Form);
+            Canvas.SetLeft(stamp, p.X - stamp.Width / 2);   // štampas centruojamas ties paspaudimu
+            Canvas.SetTop(stamp, p.Y - stamp.Height / 2);
+            ShowStamp();
+        };
+
+        Form.Children.Add(area24);   // pirmiau, kad štampas liktų viršuje
+        Form.Children.Add(stamp);
+    }
+
+    void ShowStamp()
+    {
+        var lines = F["consignee"].Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        string name = lines.Length > 0 ? lines[0].Trim() : "";
+        stampText.Text = $"{name}\n{F["deliveryPlace"].Text}\n{DateTime.Now:yyyy-MM-dd HH:mm}";
+        stamp.Visibility = Visibility.Visible;
+    }
+
+    // =====================================================================
+    //  SPAUSDINIMAS / IŠSAUGOJIMAS (Ctrl+P / Ctrl+S)
+    // =====================================================================
 
     void Print_Click(object s, RoutedEventArgs e)
     {
@@ -242,8 +433,10 @@ public partial class MainWindow : Window
         rtb.Render(Form);
         var enc = new PngBitmapEncoder();
         enc.Frames.Add(BitmapFrame.Create(rtb));
-        using var fs = System.IO.File.Create($"CMR_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+        var path = Path.Combine(AppContext.BaseDirectory, $"CMR_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+        using var fs = File.Create(path);
         enc.Save(fs);
+        Debug.WriteLine("Išsaugota: " + path);
     }
 
     // =====================================================================
@@ -270,11 +463,14 @@ public partial class MainWindow : Window
             var job = root.GetProperty("job");
             bool attached = trailer.GetProperty("attached").GetBoolean();
 
-            attachedTicks = attached ? attachedTicks + 1 : 0;
+            // skaičiuojame, kiek tikrinimų iš eilės būsena išliko (~1 s sulaikymas)
+            if (attached) { attachedTicks++; detachedTicks = 0; }
+            else { detachedTicks++; attachedTicks = 0; }
 
-            // rodome, kai priekaba išlieka prikabinta ~1 s
             if (attachedTicks == 2 && !wasAttached)
             {
+                wasAttached = true;
+
                 string srcCity = S(job, "sourceCity");
                 string dstCity = S(job, "destinationCity");
 
@@ -287,15 +483,20 @@ public partial class MainWindow : Window
                 F["loadDate"].Text = DateTime.Now.ToString("yyyy-MM-dd");
                 F["goods"].Text = S(trailer, "name");
                 F["weight"].Text = Math.Round(trailer.GetProperty("mass").GetDouble()).ToString();
-                //F["trailerPlate"].Text = S(trailer, "licensePlate");
-                //F["truckPlate"].Text = S(root.GetProperty("truck"), "licensePlate");
+                F["trailerPlate"].Text = "";           // naujai priekabai numerį įvesi ranka
 
+                stamp.Visibility = Visibility.Hidden;  // naujas krovinys: be senojo štampo
                 Show();
                 Activate();
             }
+            else if (detachedTicks == 2 && wasAttached)
+            {
+                wasAttached = false;
 
-            if (!attached) wasAttached = false;
-            else if (attachedTicks >= 2) wasAttached = true;
+                // laukų nekeičiame: atkabinus užsakymo duomenų žaidimas gali nebeduoti
+                Show();
+                Activate();
+            }
         }
         catch (HttpRequestException)
         {
@@ -308,7 +509,7 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    // SAVE/LOAD
+    //  SAVE / LOAD
     // =====================================================================
 
     void LoadSettings()
@@ -335,5 +536,4 @@ public partial class MainWindow : Window
         }
         catch { }
     }
-
 }

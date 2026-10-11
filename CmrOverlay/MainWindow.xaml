@@ -8,11 +8,6 @@
         Width="700" Height="990"
         MaxHeight="{x:Static SystemParameters.MaximizedPrimaryScreenHeight}">
     <DockPanel Background="#F0FFFFFF">
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="6">
-            <Button Content="Spausdinti" Click="Print_Click" Margin="0,0,6,0"/>
-            <Button Content="Išsaugoti PNG" Click="Save_Click" Margin="0,0,6,0"/>
-            <Button Content="Uždaryti" Click="Close_Click"/>
-        </StackPanel>
         <Viewbox Stretch="Uniform">
             <Canvas x:Name="Form" Width="1654" Height="2339">
                 <Image Source="cmr.png" Width="1654" Height="2339"/>
