@@ -7,11 +7,15 @@ using System.Windows.Media.Imaging;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows.Threading;
+using System.Diagnostics;
 
 namespace CmrOverlay;
 
 public partial class MainWindow : Window
 {
+    TextBox? drag;
+    Point dragOff;
+
     readonly Dictionary<string, TextBox> F = new();
 
     public MainWindow()
@@ -50,6 +54,29 @@ public partial class MainWindow : Window
         };
         Canvas.SetLeft(tb, x);
         Canvas.SetTop(tb, y);
+        tb.PreviewMouseLeftButtonDown += (s, e) =>
+        {
+            if (System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.Alt) return;
+            drag = tb;
+            var p = e.GetPosition(Form);
+            dragOff = new Point(p.X - Canvas.GetLeft(tb), p.Y - Canvas.GetTop(tb));
+            tb.CaptureMouse();
+            e.Handled = true;
+        };
+        tb.PreviewMouseMove += (s, e) =>
+        {
+            if (drag != tb) return;
+            var p = e.GetPosition(Form);
+            Canvas.SetLeft(tb, p.X - dragOff.X);
+            Canvas.SetTop(tb, p.Y - dragOff.Y);
+        };
+        tb.PreviewMouseLeftButtonUp += (s, e) =>
+        {
+            if (drag != tb) return;
+            drag = null;
+            tb.ReleaseMouseCapture();
+            Debug.WriteLine($"AddField(\"{key}\", {Canvas.GetLeft(tb):0}, {Canvas.GetTop(tb):0}, {tb.Width:0}, {tb.Height:0});");
+        };
         Form.Children.Add(tb);
         F[key] = tb;
     }
@@ -58,23 +85,23 @@ public partial class MainWindow : Window
     {
         // Koordinatės apytikrės, reikės sukalibruoti pagal tavo nuotrauką
         AddField("sender", 115, 195, 680, 150, true);   // 1
-        AddField("consignee", 115, 385, 680, 150, true);   // 2
-        AddField("deliveryPlace", 190, 585, 600, 30);         // 3 Vieta
-        AddField("deliveryCountry", 190, 615, 600, 30);         // 3 Šalis
-        AddField("loadPlace", 190, 710, 600, 30);         // 4 Vieta
-        AddField("loadCountry", 190, 740, 600, 30);         // 4 Šalis
-        AddField("loadDate", 190, 770, 600, 30);         // 4 Data
-        AddField("carrier", 810, 385, 700, 150, true);   // 16
-        AddField("remarks", 810, 765, 700, 140, true);   // 18
-        AddField("marks", 115, 955, 220, 280, true);   // 6
-        AddField("packages", 345, 955, 190, 280, true);   // 7
-        AddField("packing", 545, 955, 170, 280, true);   // 8
-        AddField("goods", 730, 955, 235, 280, true);   // 9
-        AddField("statNo", 975, 955, 170, 280, true);   // 10
-        AddField("weight", 1155, 955, 170, 280, true);   // 11
-        AddField("volume", 1335, 955, 190, 280, true);   // 12
-        AddField("truckPlate", 115, 2075, 320, 40);         // 25 vilkikas
-        AddField("trailerPlate", 450, 2075, 320, 40);         // 25 priekaba
+        AddField("consignee", 113, 390, 680, 150, true);   // 2
+        AddField("deliveryPlace", 202, 583, 600, 30);         // 3 Vieta
+        AddField("deliveryCountry", 214, 613, 600, 30);         // 3 Šalis
+        AddField("loadPlace", 202, 710, 600, 30);         // 4 Vieta
+        AddField("loadCountry", 214, 740, 600, 30);         // 4 Šalis
+        AddField("loadDate", 192, 768, 600, 30);         // 4 Data
+        AddField("carrier", 824, 390, 700, 150, true);   // 16
+        AddField("remarks", 824, 772, 700, 140, true);   // 18
+        AddField("marks", 115, 969, 220, 280, true);   // 6
+        AddField("packages", 345, 969, 190, 280, true);   // 7
+        AddField("packing", 547, 967, 170, 280, true);   // 8
+        AddField("goods", 732, 969, 235, 280, true);   // 9
+        AddField("statNo", 994, 967, 170, 280, true);   // 10
+        AddField("weight", 1174, 967, 170, 280, true);   // 11
+        AddField("volume", 1357, 969, 190, 280, true);   // 12
+        AddField("truckPlate", 115, 2065, 320, 40);         // 25 vilkikas
+        AddField("trailerPlate", 457, 2070, 320, 40);         // 25 priekaba
     }
 
     void Close_Click(object s, RoutedEventArgs e) => Hide();
