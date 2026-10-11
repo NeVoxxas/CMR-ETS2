@@ -1,19 +1,25 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <UseWPF>true</UseWPF>
-  </PropertyGroup>
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWPF>true</UseWPF>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <None Remove="cmr.png" />
-  </ItemGroup>
+	<ItemGroup>
+		<None Remove="cmr.png" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <Resource Include="cmr.png" />
-  </ItemGroup>
+	<ItemGroup>
+		<Resource Include="cmr.png">
+		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Resource>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Content Include="cities.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('cities.json')" />
+	</ItemGroup>
 
 </Project>

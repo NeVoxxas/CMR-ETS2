@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -93,9 +94,9 @@ public partial class MainWindow : Window
     // Mod folder
     static readonly string[] ModFolders =
     {
-    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                 "Euro Truck Simulator 2", "mod"),
-};
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                     "Euro Truck Simulator 2", "mod"),
+    };
 
     static readonly Dictionary<string, string> CountryIds = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -121,8 +122,96 @@ public partial class MainWindow : Window
         ["estonia"] = "EE",
         ["latvia"] = "LV",
         ["lithuania"] = "LT",
-        ["russia"] = "RU"
+        ["russia"] = "RU",
+        ["turkey"] = "TR",
+        ["bulgaria"] = "BG",
+        ["romania"] = "RO",
+        ["greece"] = "GR",
+        ["croatia"] = "HR",
+        ["slovenia"] = "SI",
+        ["serbia"] = "RS",
+        ["macedonia"] = "MK",
+        ["albania"] = "AL",
+        ["montenegro"] = "ME",
+        ["kosovo"] = "XK",
+        ["ukraine"] = "UA",
+        ["belarus"] = "BY",
+        ["moldova"] = "MD",
+        ["ireland"] = "IE",
+        ["bosnia"] = "BA"
     };
+
+    // Miestų užkrovimas: 1) cities.json (šalia exe) 2) modai (.scs/.zip) iš Documents\...\mod
+    static void LoadCities()
+    {
+        // 1) cities.json
+        try
+        {
+            var p = Path.Combine(AppContext.BaseDirectory, "cities.json");
+            if (File.Exists(p))
+            {
+                var d = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(p, Encoding.UTF8));
+                if (d != null)
+                    foreach (var kv in d) Country[kv.Key] = kv.Value;
+            }
+        }
+        catch (Exception ex) { Debug.WriteLine("cities.json: " + ex.Message); }
+
+        try
+        {
+            var pi = Path.Combine(AppContext.BaseDirectory, "city_ids.json");
+            if (File.Exists(pi))
+            {
+                var d = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(pi, Encoding.UTF8));
+                if (d != null)
+                    foreach (var kv in d) CityNameById[kv.Key] = kv.Value;
+            }
+        }
+        catch (Exception ex) { Debug.WriteLine("city_ids.json: " + ex.Message); }
+
+        // 2) modai (papildo/perrašo)
+        LoadModCities();
+
+        // 3) paieška be diakritikų (Köln = Koln)
+        foreach (var kv in Country.ToList())
+            NormCountry.TryAdd(Norm(kv.Key), kv.Value);
+    }
+
+    static readonly Dictionary<string, string> NormCountry = new(StringComparer.OrdinalIgnoreCase);
+
+    // miesto id (pvz. tm_waldlheim) -> rodomas pavadinimas (Waldlaubersheim)
+    static readonly Dictionary<string, string> CityNameById = new(StringComparer.OrdinalIgnoreCase);
+
+    static string Norm(string s)
+    {
+        var d = s.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder();
+        foreach (var ch in d)
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark) sb.Append(ch);
+        return sb.ToString().Replace('ł', 'l').Replace('Ł', 'L').Trim();
+    }
+
+    static void ParseCities(string text, string fallbackName)
+    {
+        var re = new Regex(@"city_data\s*:\s*city\.(\w+)\s*\{(.*?)\n\s*\}", RegexOptions.Singleline);
+        foreach (Match m in re.Matches(text))
+        {
+            var id = m.Groups[1].Value;
+            var body = m.Groups[2].Value;
+            var c = Regex.Match(body, @"\bcountry\s*:\s*""?(\w+)""?");
+            if (!c.Success) continue;
+            var cid = c.Groups[1].Value;
+            var code = CountryIds.TryGetValue(cid, out var iso) ? iso : cid.ToUpperInvariant();
+            var n = Regex.Match(body, @"\bcity_name\s*:\s*""([^""]+)""");
+            if (n.Success && !n.Groups[1].Value.StartsWith("@@"))
+            {
+                Country[n.Groups[1].Value] = code;
+                CityNameById[id] = n.Groups[1].Value;
+            }
+            Country[id] = code;
+            Country[id.Replace('_', ' ')] = code;
+        }
+    }
 
     static void LoadModCities()
     {
@@ -143,20 +232,8 @@ public partial class MainWindow : Window
                         if (!path.StartsWith("def/city/", StringComparison.OrdinalIgnoreCase) ||
                             !path.EndsWith(".sii", StringComparison.OrdinalIgnoreCase)) continue;
 
-                        using var reader = new StreamReader(entry.Open());
-                        var text = reader.ReadToEnd();
-
-                        var ctry = Regex.Match(text, "country:\\s*\"?([\\w.]+)\"?");
-                        if (!ctry.Success) continue;
-                        var id = ctry.Groups[1].Value;
-                        var code = CountryIds.TryGetValue(id, out var c) ? c : id.ToUpperInvariant();
-
-                        var nameMatch = Regex.Match(text, "city_name:\\s*\"([^\"]+)\"");
-                        var name = nameMatch.Success && !nameMatch.Groups[1].Value.StartsWith("@@")
-                            ? nameMatch.Groups[1].Value
-                            : Path.GetFileNameWithoutExtension(path).Replace('_', ' ');
-
-                        Country[name] = code;
+                        using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
+                        ParseCities(reader.ReadToEnd(), Path.GetFileNameWithoutExtension(path));
                     }
                 }
                 catch { /* ne ZIP arba sugadintas failas, praleidžiame */ }
@@ -164,7 +241,22 @@ public partial class MainWindow : Window
         }
     }
 
-    static string C(string city) => Country.TryGetValue(city, out var c) ? c : "";
+    static string C(string city)
+    {
+        if (string.IsNullOrWhiteSpace(city)) return "";
+        if (Country.TryGetValue(city, out var c)) return c;
+        if (NormCountry.TryGetValue(Norm(city), out c)) return c;
+        LogIfUnknown(city);
+        return "";
+    }
+
+    static readonly HashSet<string> loggedUnknown = new(StringComparer.OrdinalIgnoreCase);
+    static void LogIfUnknown(string city)
+    {
+        if (!loggedUnknown.Add(city)) return;
+        try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "unknown_cities.txt"), city + Environment.NewLine, Encoding.UTF8); }
+        catch { }
+    }
 
     // Laukai, kuriuos pildai pats (telemetrija jų nelies) – išsaugomi settings.json
     static readonly string[] Saved =
@@ -213,6 +305,11 @@ public partial class MainWindow : Window
     bool stampDrag;
     Point stampOff;
 
+    // ---------- Vežėjo antspaudas (23 grafa) ----------
+    static readonly bool AutoCarrierStamp = false;   // true = antspaudas uždedamas automatiškai kiekvienam kroviniui
+    Border carrierStamp = null!;
+    TextBlock carrierStampText = null!;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -241,6 +338,13 @@ public partial class MainWindow : Window
             if (Keyboard.Modifiers != ModifierKeys.Control) return;
             var p = e.GetPosition(Form);
             Debug.WriteLine($"X={p.X:0}, Y={p.Y:0}");
+
+            // Ctrl + paspaudimas 23 grafoje: vežėjo antspaudas
+            if (p.X >= 540 && p.X <= 1075 && p.Y >= 1670 && p.Y <= 2000)
+            {
+                ShowCarrierStamp(p);
+                e.Handled = true;
+            }
         };
 
         // F9: bandomasis užpildymas be žaidimo
@@ -272,7 +376,7 @@ public partial class MainWindow : Window
         };
 
 
-        LoadModCities();
+        LoadCities();
         StartTelemetry();
         RegisterToggleKey();
     }
@@ -483,13 +587,85 @@ public partial class MainWindow : Window
         Canvas.SetTop(signatureCanvas, 1780);
 
         // Dešinysis paspaudimas išvalo parašą (jei norisi perrašyti iš naujo)
-        signatureCanvas.MouseRightButtonDown += (s, e) =>
+        // Ctrl + dešinysis paspaudimas nuima vežėjo antspaudą
+        signatureCanvas.PreviewMouseRightButtonDown += (s, e) =>
         {
-            signatureCanvas.Strokes.Clear();
+            if (Keyboard.Modifiers == ModifierKeys.Control) carrierStamp.Visibility = Visibility.Hidden;
+            else signatureCanvas.Strokes.Clear();
             e.Handled = true;
         };
 
+        // Ctrl + kairys paspaudimas 23 grafoje deda vežėjo antspaudą (paprastas tempimas - parašas)
+        signatureCanvas.PreviewMouseLeftButtonDown += (s, e) =>
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            var p = e.GetPosition(Form);
+            ShowCarrierStamp(p);
+            e.Handled = true;
+        };
+
+        // Vežėjo antspaudas: po parašu, kad parašas būtų ant antspaudo
+        carrierStampText = new TextBlock
+        {
+            FontFamily = new FontFamily("Arial"),
+            FontSize = 22,
+            FontWeight = FontWeights.Bold,
+            Foreground = Brushes.RoyalBlue,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        carrierStamp = new Border
+        {
+            Width = 420,
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.RoyalBlue,
+            BorderThickness = new Thickness(4),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(8),
+            Opacity = 0.85,
+            Child = carrierStampText,
+            Visibility = Visibility.Hidden,
+            IsHitTestVisible = false,
+            RenderTransformOrigin = new Point(0.5, 0.5),
+            RenderTransform = new RotateTransform(4)
+        };
+        Canvas.SetLeft(carrierStamp, 595);
+        Canvas.SetTop(carrierStamp, 1760);
+
+        Form.Children.Add(carrierStamp);
         Form.Children.Add(signatureCanvas);
+    }
+
+    // Vežėjo antspaudas: įmonės pavadinimas ir HQ miestas iš žaidimo išsaugojimo.
+    // Jei nepavyksta nuskaityti - imamas 16 laukas (vežėjas). center = kur centruoti; null = numatyta vieta 23 grafoje
+    void ShowCarrierStamp(Point? center = null)
+    {
+        string text = "";
+        var (company, hq) = ReadCompanyFromSave();
+        if (!string.IsNullOrWhiteSpace(company))
+        {
+            text = company;
+            if (!string.IsNullOrWhiteSpace(hq))
+            {
+                var cc = C(hq);
+                text += "\n" + hq + (cc != "" ? ", " + cc : "");
+            }
+        }
+        if (text == "")
+        {
+            var lines = F["carrier"].Text.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                                         .Select(l => l.Trim()).Where(l => l.Length > 0);
+            text = string.Join("\n", lines);
+        }
+        carrierStampText.Text = text != "" ? text : "ĮMONĖS NERASTA\n(įrašyk 16 lauke)";
+        carrierStamp.Visibility = Visibility.Visible;
+        carrierStamp.Measure(new Size(carrierStamp.Width, double.PositiveInfinity));
+        double h = carrierStamp.DesiredSize.Height;
+        double cx = center?.X ?? 805;
+        double cy = center?.Y ?? 1850;
+        Canvas.SetLeft(carrierStamp, cx - carrierStamp.Width / 2);
+        Canvas.SetTop(carrierStamp, cy - h / 2);
     }
 
     void ShowStamp()
@@ -594,6 +770,8 @@ public partial class MainWindow : Window
 
                 sentThisJob = false;                   // naujas krovinys: leidžiame siųsti į Discord iš naujo
                 stamp.Visibility = Visibility.Hidden;
+                carrierStamp.Visibility = Visibility.Hidden;
+                if (AutoCarrierStamp) ShowCarrierStamp();
                 Show();
                 Activate();
             }
@@ -715,6 +893,264 @@ public partial class MainWindow : Window
     // =====================================================================
     //  VAIRUOTOJO VARDAS (iš ETS2 profilio aplanko pavadinimo)
     // =====================================================================
+
+    // =====================================================================
+    //  ĮMONĖ IŠ ŽAIDIMO IŠSAUGOJIMO (profile.sii + game.sii)
+    // =====================================================================
+
+    // Žinomas ETS2/ATS SII šifravimo raktas (AES-256-CBC, po to zlib)
+    static readonly byte[] SiiKey =
+    {
+        0x2a, 0x5f, 0xcb, 0x17, 0x91, 0xd2, 0x2f, 0xb6, 0x02, 0x45, 0xb3, 0xd8, 0x36, 0x9e, 0xd0, 0xb2,
+        0xc2, 0x73, 0x71, 0x56, 0x3f, 0xbf, 0x1f, 0x3c, 0x9e, 0xdf, 0x6b, 0x11, 0x82, 0x5a, 0x5d, 0x0a
+    };
+
+    static DirectoryInfo? FindProfileDir()
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Euro Truck Simulator 2");
+        DirectoryInfo? best = null;
+        DateTime bestTime = DateTime.MinValue;
+        foreach (var sub in new[] { "profiles", "steam_profiles" })
+        {
+            var dir = Path.Combine(root, sub);
+            if (!Directory.Exists(dir)) continue;
+            foreach (var d in new DirectoryInfo(dir).GetDirectories())
+            {
+                var sii = Path.Combine(d.FullName, "profile.sii");
+                var time = File.Exists(sii) ? File.GetLastWriteTimeUtc(sii) : d.LastWriteTimeUtc;
+                if (time > bestTime) { bestTime = time; best = d; }
+            }
+        }
+        return best;
+    }
+
+    // Nuskaito .sii: tekstinį arba užšifruotą (ScsC). Dvejetainio (BSII) formato neskaito.
+    static string ReadSii(string path)
+    {
+        try
+        {
+            var b = File.ReadAllBytes(path);
+            if (b.Length < 8) return "";
+
+            if (b[0] == 'S' && b[1] == 'i' && b[2] == 'i' && b[3] == 'N')
+                return Encoding.UTF8.GetString(b);
+
+            if (b[0] == 'S' && b[1] == 'c' && b[2] == 's' && b[3] == 'C')
+            {
+                // antraštė: 4 parašas, 32 HMAC, 16 IV, 4 dydis, toliau duomenys
+                var iv = b.AsSpan(36, 16).ToArray();
+                const int dataStart = 56;
+                int len = (b.Length - dataStart) / 16 * 16;
+
+                using var aes = Aes.Create();
+                aes.KeySize = 256;
+                aes.Key = SiiKey;
+                aes.IV = iv;
+                aes.Mode = CipherMode.CBC;
+                aes.Padding = PaddingMode.None;
+                using var dec = aes.CreateDecryptor();
+                var plain = dec.TransformFinalBlock(b, dataStart, len);
+
+                using var zs = new ZLibStream(new MemoryStream(plain), CompressionMode.Decompress);
+                using var ms = new MemoryStream();
+                zs.CopyTo(ms);
+                var o = ms.ToArray();
+                if (o.Length > 4 && o[0] == 'S' && o[1] == 'i' && o[2] == 'i' && o[3] == 'N')
+                    return Encoding.UTF8.GetString(o);
+                if (IsBsii(o))
+                    return BsiiToText(o);
+
+                Debug.WriteLine("SII: nežinomas turinys po iššifravimo (pirmi baitai: " + BitConverter.ToString(o, 0, Math.Min(8, o.Length)) + "): " + path);
+                return "";
+            }
+
+            if (IsBsii(b))
+                return BsiiToText(b);
+
+            Debug.WriteLine("SII: nežinomas formatas: " + path);
+        }
+        catch (Exception ex) { Debug.WriteLine("SII: " + ex.Message); }
+        return "";
+    }
+
+    // ---------- BSII (dvejetainis SII) skaitytuvas ----------
+    // Išsitraukia tik reikiamus laukus ir grąžina juos kaip tekstą: laukas: "reikšmė"
+    static string BsiiToText(byte[] data)
+    {
+        var wanted = new[] { "company_name", "hq_city" };
+        var found = new Dictionary<string, string>();
+        try
+        {
+            using var r = new BinaryReader(new MemoryStream(data), Encoding.UTF8);
+            r.ReadUInt32();                       // "SIIB"
+            uint ver = r.ReadUInt32();            // 1, 2, 3
+            var structs = new Dictionary<uint, List<(uint type, string name)>>();
+
+            while (r.BaseStream.Position < r.BaseStream.Length)
+            {
+                uint bt = r.ReadUInt32();
+                if (bt == 0)
+                {
+                    if (r.ReadByte() == 0) break;             // struktūrų pabaiga
+                    uint id = r.ReadUInt32();
+                    BsiiString(r);                            // struktūros pavadinimas
+                    var segs = new List<(uint, string)>();
+                    while (true)
+                    {
+                        uint t = r.ReadUInt32();
+                        if (t == 0) break;
+                        string fn = BsiiString(r);
+                        if (t == 0x37)                        // enum lentelė
+                        {
+                            uint n = r.ReadUInt32();
+                            for (uint i = 0; i < n; i++) { r.ReadUInt32(); BsiiString(r); }
+                        }
+                        segs.Add((t, fn));
+                    }
+                    structs[id] = segs;
+                }
+                else
+                {
+                    if (!structs.TryGetValue(bt, out var segs)) break;
+                    BsiiId(r);                                // vieneto id
+                    foreach (var (t, fn) in segs)
+                    {
+                        string? v = BsiiValue(r, t, ver);
+                        if (v != null && (fn.Contains("company") || fn == "profile_name"))
+                            Debug.WriteLine($"BSII laukas {fn} = '{v}'");
+                        if (v != null && Array.IndexOf(wanted, fn) >= 0 && !found.ContainsKey(fn))
+                            found[fn] = v;
+                    }
+                    if (found.Count == wanted.Length) break;
+                }
+            }
+        }
+        catch (Exception ex) { Debug.WriteLine("BSII: " + ex.Message); }
+
+        var sb = new StringBuilder();
+        if (found.TryGetValue("company_name", out var cn)) sb.AppendLine($"company_name: \"{cn}\"");
+        if (found.TryGetValue("hq_city", out var hc)) sb.AppendLine($"hq_city: city.{hc}");
+        return sb.ToString();
+    }
+
+    // dvejetainio SII žymuo: "BSII" (kai kur užrašomas ir kaip "SIIB")
+    static bool IsBsii(byte[] d) =>
+        d.Length > 8 &&
+        ((d[0] == 'B' && d[1] == 'S' && d[2] == 'I' && d[3] == 'I') ||
+         (d[0] == 'S' && d[1] == 'I' && d[2] == 'I' && d[3] == 'B'));
+
+    static string BsiiString(BinaryReader r)
+    {
+        uint len = r.ReadUInt32();
+        return Encoding.UTF8.GetString(r.ReadBytes((int)len));
+    }
+
+    // Užkoduotas žetonas (base-38): 0-9, a-z, _
+    static string BsiiToken(ulong v)
+    {
+        const string table = "0123456789abcdefghijklmnopqrstuvwxyz_";
+        var sb = new StringBuilder();
+        while (v != 0)
+        {
+            int i = (int)(v % 38);
+            v /= 38;
+            if (i == 0) break;
+            sb.Append(table[i - 1]);
+        }
+        return sb.ToString();
+    }
+
+    static void BsiiId(BinaryReader r)
+    {
+        byte parts = r.ReadByte();
+        if (parts == 0xFF) r.ReadUInt64();                    // be pavadinimo: 64 bitų adresas
+        else for (int i = 0; i < parts; i++) r.ReadUInt64();  // pavadinimo dalys
+    }
+
+    // Nuskaito vieną reikšmę; grąžina tekstą tik string/token tipams, kitus praleidžia
+    static string? BsiiValue(BinaryReader r, uint t, uint ver)
+    {
+        if ((t & 1) == 0)                                     // visi masyvų tipai yra lyginiai
+        {
+            uint n = r.ReadUInt32();
+            for (uint i = 0; i < n; i++) BsiiValue(r, t - 1, ver);
+            return null;
+        }
+        switch (t)
+        {
+            case 0x01: return BsiiString(r);
+            case 0x03: return BsiiToken(r.ReadUInt64());
+            case 0x05: case 0x25: case 0x27: case 0x2F: case 0x37: r.ReadUInt32(); return null;
+            case 0x07: r.ReadBytes(8); return null;
+            case 0x09: case 0x11: r.ReadBytes(12); return null;
+            case 0x17: r.ReadBytes(16); return null;
+            case 0x19:
+                if (ver < 2) throw new InvalidDataException("BSII v1 vector8");
+                r.ReadBytes(32); return null;
+            case 0x29: case 0x2B: r.ReadUInt16(); return null;
+            case 0x31: case 0x33: r.ReadUInt64(); return null;
+            case 0x35: r.ReadByte(); return null;
+            case 0x39: case 0x3B: case 0x3D: BsiiId(r); return null;
+            default: throw new InvalidDataException($"BSII: nežinomas tipas 0x{t:X2}");
+        }
+    }
+
+    // Lauko reikšmė iš SII teksto: su kabutėmis arba be (iki eilutės pabaigos)
+    static string SiiField(string text, string name)
+    {
+        var m = Regex.Match(text, @"(?m)^\s*" + Regex.Escape(name) + @"\s*:[ \t]*(.*?)[ \t]*\r?$");
+        if (!m.Success) return "";
+        var v = m.Groups[1].Value.Trim();
+        if (v.Length >= 2 && v.StartsWith("\"") && v.EndsWith("\"")) v = v.Substring(1, v.Length - 2);
+        return v.Trim();
+    }
+
+    // (įmonės pavadinimas, HQ miestas) iš aktyvaus profilio
+    static (string company, string hq) ReadCompanyFromSave()
+    {
+        try
+        {
+            var dir = FindProfileDir();
+            if (dir == null) return ("", "");
+
+            string company = "";
+            var prof = ReadSii(Path.Combine(dir.FullName, "profile.sii"));
+            company = SiiField(prof, "company_name");
+
+            string hq = "";
+            var saveRoot = Path.Combine(dir.FullName, "save");
+            if (Directory.Exists(saveRoot))
+            {
+                var newest = new DirectoryInfo(saveRoot).GetDirectories()
+                    .Where(d => File.Exists(Path.Combine(d.FullName, "game.sii")))
+                    .OrderByDescending(d => File.GetLastWriteTimeUtc(Path.Combine(d.FullName, "game.sii")))
+                    .FirstOrDefault();
+                if (newest != null)
+                {
+                    var game = ReadSii(Path.Combine(newest.FullName, "game.sii"));
+                    var hm = Regex.Match(game, @"hq_city\s*:\s*(?:city\.)?(\w+)");
+                    if (hm.Success)
+                    {
+                        var hqId = hm.Groups[1].Value;
+                        hq = CityNameById.TryGetValue(hqId, out var nm)
+                            ? nm
+                            : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(hqId.Replace('_', ' '));
+                    }
+                    if (company == "") company = SiiField(game, "company_name");
+                }
+            }
+            Debug.WriteLine($"Įmonė iš išsaugojimo: '{company}', HQ: '{hq}'");
+            if (company == "")
+            {
+                var i = prof.IndexOf("company_name", StringComparison.Ordinal);
+                Debug.WriteLine(i >= 0
+                    ? "profile.sii: " + prof.Substring(i, Math.Min(80, prof.Length - i)).Replace("\r", "").Replace("\n", " | ")
+                    : "profile.sii: laukas company_name nerastas (ilgis " + prof.Length + ")");
+            }
+            return (company, hq);
+        }
+        catch (Exception ex) { Debug.WriteLine("ReadCompanyFromSave: " + ex.Message); return ("", ""); }
+    }
 
     static string DetectProfileName()
     {
