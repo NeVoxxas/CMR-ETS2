@@ -35,7 +35,10 @@ public partial class MainWindow : Window
 
     // ---------- F8 ----------
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mod, uint vk);
+    [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     const int HotkeyId = 9001;
+    const int ExitHotkeyId = 9002;                // Ctrl + Shift + F8 = išjungti programą
+    const bool ExitWithGame = true;               // programa uždaroma, kai uždaromas ETS2
 
     void RegisterToggleKey()
     {
@@ -43,11 +46,46 @@ public partial class MainWindow : Window
         HwndSource.FromHwnd(h).AddHook(WndProc);
         if (!RegisterHotKey(h, HotkeyId, 0, 0x77))               // 0x77 = F8
             Debug.WriteLine("F8 alr using");
+        if (!RegisterHotKey(h, ExitHotkeyId, 0x0002 | 0x0004, 0x77))   // Ctrl(0x2) + Shift(0x4) + F8
+            Debug.WriteLine("Ctrl+Shift+F8 alr using");
+    }
+
+    // Automatinis išjungimas: kai ETS2 procesas, kurį jau buvome pamatę, dingsta - uždarom programą
+    bool seenGame;
+    readonly DispatcherTimer gameWatch = new() { Interval = TimeSpan.FromSeconds(3) };
+
+    void StartGameWatcher()
+    {
+        if (!ExitWithGame) return;
+        gameWatch.Tick += (_, _) =>
+        {
+            bool running = Process.GetProcessesByName("eurotrucks2").Length > 0;
+            if (running) seenGame = true;
+            else if (seenGame) Application.Current.Shutdown();
+        };
+        gameWatch.Start();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        try
+        {
+            var h = new WindowInteropHelper(this).Handle;
+            UnregisterHotKey(h, HotkeyId);
+            UnregisterHotKey(h, ExitHotkeyId);
+        }
+        catch { }
+        base.OnClosed(e);
     }
 
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == 0x0312 && wParam.ToInt32() == HotkeyId)
+        if (msg == 0x0312 && wParam.ToInt32() == ExitHotkeyId)
+        {
+            Application.Current.Shutdown();
+            handled = true;
+        }
+        else if (msg == 0x0312 && wParam.ToInt32() == HotkeyId)
         {
             if (IsVisible) Hide();
             else { Show(); Activate(); }
@@ -379,6 +417,7 @@ public partial class MainWindow : Window
         LoadCities();
         StartTelemetry();
         RegisterToggleKey();
+        StartGameWatcher();
     }
 
 
