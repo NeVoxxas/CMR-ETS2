@@ -34,6 +34,19 @@ public partial class MainWindow : Window
             System.Diagnostics.Debug.WriteLine($"X={p.X:0}, Y={p.Y:0}");
         };
         StartTelemetry();
+        KeyDown += (s, e) =>
+        {
+            if (e.Key != System.Windows.Input.Key.F9) return;
+            F["sender"].Text = "UAB Test\nVilnius, LT";
+            F["consignee"].Text = "GmbH Test\nBerlin, DE";
+            F["deliveryPlace"].Text = "Berlin";
+            F["loadPlace"].Text = "Vilnius";
+            F["loadDate"].Text = DateTime.Now.ToString("yyyy-MM-dd");
+            F["goods"].Text = "Pallets";
+            F["weight"].Text = "18000";
+            F["truckPlate"].Text = "ABC123";
+            F["trailerPlate"].Text = "XYZ789";
+        };
     }
 
     void AddField(string key, double x, double y, double w, double h, bool multi = false)
@@ -84,24 +97,29 @@ public partial class MainWindow : Window
     void BuildForm()
     {
         // Koordinatės apytikrės, reikės sukalibruoti pagal tavo nuotrauką
-        AddField("sender", 115, 195, 680, 150, true);   // 1
-        AddField("consignee", 113, 390, 680, 150, true);   // 2
-        AddField("deliveryPlace", 202, 583, 600, 30);         // 3 Vieta
-        AddField("deliveryCountry", 214, 613, 600, 30);         // 3 Šalis
-        AddField("loadPlace", 202, 710, 600, 30);         // 4 Vieta
-        AddField("loadCountry", 214, 740, 600, 30);         // 4 Šalis
-        AddField("loadDate", 192, 768, 600, 30);         // 4 Data
+        AddField("sender", 115, 205, 680, 150, true);   // 1
+        AddField("consignee", 113, 397, 680, 150, true);   // 2
+        AddField("deliveryPlace", 209, 585, 600, 30);         // 3 Vieta
+        AddField("deliveryCountry", 221, 618, 600, 30);         // 3 Šalis
+        AddField("loadPlace", 204, 712, 600, 30);         // 4 Vieta
+        AddField("loadCountry", 216, 742, 600, 30);         // 4 Šalis
+        AddField("loadDate", 204, 773, 600, 30);         // 4 Data
         AddField("carrier", 824, 390, 700, 150, true);   // 16
         AddField("remarks", 824, 772, 700, 140, true);   // 18
-        AddField("marks", 115, 969, 220, 280, true);   // 6
-        AddField("packages", 345, 969, 190, 280, true);   // 7
-        AddField("packing", 547, 967, 170, 280, true);   // 8
-        AddField("goods", 732, 969, 235, 280, true);   // 9
-        AddField("statNo", 994, 967, 170, 280, true);   // 10
-        AddField("weight", 1174, 967, 170, 280, true);   // 11
-        AddField("volume", 1357, 969, 190, 280, true);   // 12
-        AddField("truckPlate", 115, 2065, 320, 40);         // 25 vilkikas
-        AddField("trailerPlate", 457, 2070, 320, 40);         // 25 priekaba
+        AddField("marks", 115, 971, 220, 280, true);   // 6
+        AddField("packages", 345, 971, 190, 280, true);   // 7
+        AddField("packing", 547, 972, 170, 280, true);   // 8
+        AddField("goods", 732, 971, 235, 280, true);   // 9
+        AddField("statNo", 994, 972, 170, 280, true);   // 10
+        AddField("weight", 1174, 972, 170, 280, true);   // 11
+        AddField("volume", 1357, 971, 190, 280, true);   // 12
+        AddField("truckPlate", 115, 2069, 320, 40);         // 25 vilkikas
+        AddField("trailerPlate", 464, 2069, 320, 40);         // 25 priekaba
+        AddField("annexed", 115, 842, 680, 90, true);   // 5 pridedami dokumentai
+        AddField("instructions", 120, 1324, 660, 95, true);   // 13 siuntėjo nurodymai
+        AddField("cash", 153, 1544, 1400, 25);         // 14 grąžinimas
+        AddField("payment", 113, 1614, 670, 90, true);    // 15 apmokėjimo sąlygos
+        AddField("special", 815, 1619, 710, 90, true);    // 20 ypatingos sąlygos
     }
 
     void Close_Click(object s, RoutedEventArgs e) => Hide();
