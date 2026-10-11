@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -21,23 +22,25 @@ namespace CmrOverlay;
 public partial class MainWindow : Window
 {
     // =====================================================================
-    //  NUSTATYMAI
+    //  Settings
     // =====================================================================
-    const double FormW = 1654;          // cmr.png plotis (px)
-    const double FormH = 2339;          // cmr.png aukštis (px)
-    const bool ShowBorders = false;     // kalibravimui true, galutinei versijai false
+    const double FormW = 1654;
+    const double FormH = 2339;
+    const bool ShowBorders = false;
     const string TelemetryUrl = "http://localhost:25555/api/ets2/telemetry";
 
-    // ---------- Globalus klavišas (F8) ----------
+    InkCanvas signatureCanvas = null!; // InkCanvas for signature input
+
+    // ---------- F8 ----------
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mod, uint vk);
     const int HotkeyId = 9001;
 
     void RegisterToggleKey()
     {
-        var h = new WindowInteropHelper(this).EnsureHandle();   // veikia ir kai langas paslėptas
+        var h = new WindowInteropHelper(this).EnsureHandle();
         HwndSource.FromHwnd(h).AddHook(WndProc);
         if (!RegisterHotKey(h, HotkeyId, 0, 0x77))               // 0x77 = F8
-            Debug.WriteLine("F8 klavišas užimtas, pakeisk 0x77");
+            Debug.WriteLine("F8 alr using");
     }
 
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -54,7 +57,7 @@ public partial class MainWindow : Window
     // ---------- Laukai ----------
     readonly Dictionary<string, TextBox> F = new();
 
-    // Miestas -> šalis (pildyk pagal poreikį)
+    // City -> Country
     static readonly Dictionary<string, string> Country = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Vilnius"] = "LT",
@@ -86,16 +89,13 @@ public partial class MainWindow : Window
         ["Wien"] = "AT"
     };
 
-    // modų aplankai, kuriuose ieškoma miestų (pakeisk pagal save)
+    // Mod folder
     static readonly string[] ModFolders =
     {
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                  "Euro Truck Simulator 2", "mod"),
-    // jei modą turi per Steam Workshop, pridėk ir šitą:
-    // @"C:\Program Files (x86)\Steam\steamapps\workshop\content\227300",
 };
 
-    // šalies id iš modo -> kodas (nežinomas id tampa didžiosiomis raidėmis)
     static readonly Dictionary<string, string> CountryIds = new(StringComparer.OrdinalIgnoreCase)
     {
         ["germany"] = "DE",
@@ -169,10 +169,29 @@ public partial class MainWindow : Window
     static readonly string[] Saved =
     {
         "carrier", "truckPlate", "instructions", "payment", "special",
-        "annexed", "cash", "marks", "packages", "packing", "statNo", "volume", "remarks"
+        "annexed", "cash", "marks", "packages", "packing", "statNo", "volume", "remarks", "driverName", "discordWebhookUrl"
     };
 
     static readonly string SettingsPath = Path.Combine(AppContext.BaseDirectory, "settings.json");
+
+    const string CurrencyCode = "EUR";       // žaidimo valiuta (telemetrija jos nepateikia)
+    DateTime? lastGameTime;
+
+    static double N(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0;
+
+    static bool TryGameTime(JsonElement root, out DateTime t)
+    {
+        t = default;
+        return root.TryGetProperty("game", out var g) &&
+               DateTime.TryParse(S(g, "time"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out t);
+    }
+
+    void SetTime(string key, DateTime t)      // key: loadArr, loadDep, unloadArr, unloadDep
+    {
+        F[key + "H"].Text = t.Hour.ToString("00");
+        F[key + "M"].Text = t.Minute.ToString("00");
+    }
 
     // ---------- Telemetrija ----------
     static readonly HttpClient http = new();
@@ -203,6 +222,7 @@ public partial class MainWindow : Window
 
         BuildForm();
         BuildStamp();       // turi būti prieš StartTelemetry()
+        BuildSignatureCanvas(); // turi būti prieš StartTelemetry()
 
         LoadSettings();
         foreach (var k in Saved)
@@ -238,13 +258,19 @@ public partial class MainWindow : Window
             bool ctrl = Keyboard.Modifiers == ModifierKeys.Control;
             if (ctrl && e.Key == Key.P) { Print_Click(this, new RoutedEventArgs()); e.Handled = true; }
             else if (ctrl && e.Key == Key.S) { Save_Click(this, new RoutedEventArgs()); e.Handled = true; }
+            else if (ctrl && e.Key == Key.D) { _ = SendCmrToDiscordAsync(); e.Handled = true; } // <--- Štai čia pridėjome testą!
             else if (ctrl && e.Key == Key.Q) { Application.Current.Shutdown(); }
             else if (e.Key == Key.Escape) { Hide(); e.Handled = true; }
+
         };
 
+
+        LoadModCities();
         StartTelemetry();
         RegisterToggleKey();
     }
+
+
 
     // =====================================================================
     //  LAUKAI
@@ -322,6 +348,20 @@ public partial class MainWindow : Window
         AddField("cash", 153, 1544, 1400, 25);         // 14 grąžinimas
         AddField("payment", 113, 1614, 670, 90, true);    // 15 apmokėjimo sąlygos
         AddField("special", 815, 1619, 710, 90, true);    // 20 ypatingos sąlygos
+        AddField("loadArrH", 275, 1757, 70, 26);   // 22 Atvykimas pakrovimui, val.
+        AddField("loadArrM", 398, 1757, 85, 26);   // 22 min.
+        AddField("loadDepH", 275, 1787, 70, 26);   // 22 Išvykimas, val.
+        AddField("loadDepM", 398, 1787, 85, 26);   // 22 min.
+        AddField("driverName", 1082, 1630, 450, 35); // Vairuotojo vardo įvedimo laukelis
+        AddField("unloadArrH", 1252, 1758, 72, 26);   // 24 Atvykimas iškrovimui, val.
+        AddField("unloadArrM", 1364, 1758, 90, 26);   // 24 min.
+        AddField("unloadDepH", 1273, 1788, 72, 26);   // 24 Išvykimas, val.
+        AddField("unloadDepM", 1389, 1788, 90, 26);  // 24 min.
+        AddField("freight", 1018, 1322, 170, 28);   // 19 Pervežimo kaina (siuntėjas)
+        AddField("currency", 1182, 1322, 175, 28);   // 19 Valiuta
+        AddField("freightTotal", 1013, 1512, 170, 28);  // 19 Viso apmokėjimui
+        AddField("currencyTotal", 1180, 1510, 175, 28);
+        AddField("tariffKm", 219, 2195, 125, 35);   // 28 Tarifinis atstumas, km
     }
 
     // =====================================================================
@@ -402,19 +442,59 @@ public partial class MainWindow : Window
             Canvas.SetLeft(stamp, p.X - stamp.Width / 2);   // štampas centruojamas ties paspaudimu
             Canvas.SetTop(stamp, p.Y - stamp.Height / 2);
             ShowStamp();
+            if (lastGameTime is DateTime t) SetTime("unloadDep", t);   // išvykimas iš iškrovimo
         };
 
         Form.Children.Add(area24);   // pirmiau, kad štampas liktų viršuje
         Form.Children.Add(stamp);
     }
 
-    void ShowStamp()
+    void BuildSignatureCanvas()
     {
-        var lines = F["consignee"].Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        string name = lines.Length > 0 ? lines[0].Trim() : "";
-        stampText.Text = $"{name}\n{F["deliveryPlace"].Text}\n{DateTime.Now:yyyy-MM-dd HH:mm}";
-        stamp.Visibility = Visibility.Visible;
+        // Sukuriame piešimo lauką (InkCanvas) 23 lauko zonoje
+        signatureCanvas = new InkCanvas
+        {
+            Width = 450,       // Pritaikyta pagal 23 lauko plotį
+            Height = 160,      // Pritaikyta pagal 23 lauko aukštį
+            Background = Brushes.Transparent,
+            EditingMode = InkCanvasEditingMode.Ink
+        };
+
+        var drawingAttributes = new System.Windows.Ink.DrawingAttributes
+        {
+            Color = Colors.DarkBlue,
+            Width = 3,
+            Height = 3
+        };
+        signatureCanvas.DefaultDrawingAttributes = drawingAttributes;
+
+        // 23 lauko pozicija ant kanco (X ir Y koordinates patikslink pagal savo formos dydį)
+        // Orientacinė 23 lauko vieta ant 1654x2339 lapo:
+        Canvas.SetLeft(signatureCanvas, 580);
+        Canvas.SetTop(signatureCanvas, 1780);
+
+        // Dešinysis paspaudimas išvalo parašą (jei norisi perrašyti iš naujo)
+        signatureCanvas.MouseRightButtonDown += (s, e) =>
+        {
+            signatureCanvas.Strokes.Clear();
+            e.Handled = true;
+        };
+
+        Form.Children.Add(signatureCanvas);
     }
+
+    void ShowStamp()
+{
+    var lines = F["consignee"].Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    string name = lines.Length > 0 ? lines[0].Trim() : "";
+    string time = (lastGameTime ?? DateTime.Now).ToString("HH:mm");
+    
+    string driver = F.TryGetValue("driverName", out var tb) ? tb.Text.Trim() : "";
+    string driverLine = string.IsNullOrEmpty(driver) ? "" : $"\nVairuotojas: {driver}";
+
+    stampText.Text = $"{name}\n{F["deliveryPlace"].Text}\n{DateTime.Now:yyyy-MM-dd} {time}{driverLine}";
+    stamp.Visibility = Visibility.Visible;
+}
 
     // =====================================================================
     //  SPAUSDINIMAS / IŠSAUGOJIMAS (Ctrl+P / Ctrl+S)
@@ -463,7 +543,9 @@ public partial class MainWindow : Window
             var job = root.GetProperty("job");
             bool attached = trailer.GetProperty("attached").GetBoolean();
 
-            // skaičiuojame, kiek tikrinimų iš eilės būsena išliko (~1 s sulaikymas)
+            bool hasTime = TryGameTime(root, out var gameTime);
+            if (hasTime) lastGameTime = gameTime;
+
             if (attached) { attachedTicks++; detachedTicks = 0; }
             else { detachedTicks++; attachedTicks = 0; }
 
@@ -482,20 +564,39 @@ public partial class MainWindow : Window
                 F["loadCountry"].Text = C(srcCity);
                 F["loadDate"].Text = DateTime.Now.ToString("yyyy-MM-dd");
                 F["goods"].Text = S(trailer, "name");
-                F["weight"].Text = Math.Round(trailer.GetProperty("mass").GetDouble()).ToString();
-                F["trailerPlate"].Text = "";           // naujai priekabai numerį įvesi ranka
+                F["weight"].Text = Math.Round(N(trailer, "mass")).ToString();
+                F["trailerPlate"].Text = "";
 
-                stamp.Visibility = Visibility.Hidden;  // naujas krovinys: be senojo štampo
+                // frachtas ir valiuta
+                long income = (long)N(job, "income");
+                string money = income > 0 ? income.ToString() : "";
+                F["freight"].Text = money;
+                F["freightTotal"].Text = money;
+                F["currency"].Text = income > 0 ? CurrencyCode : "";
+                F["currencyTotal"].Text = income > 0 ? CurrencyCode : "";
+
+                // atstumas (GPS maršruto ilgis metrais -> km)
+                double meters = root.TryGetProperty("navigation", out var nav) ? N(nav, "estimatedDistance") : 0;
+                F["tariffKm"].Text = meters > 0 ? Math.Round(meters / 1000).ToString() : "";
+
+                // laikai: naujas krovinys
+                foreach (var k in new[] { "loadArrH", "loadArrM", "unloadArrH", "unloadArrM", "unloadDepH", "unloadDepM" })
+                    F[k].Text = "";
+                if (hasTime) SetTime("loadDep", gameTime);   // išvykimas iš pakrovimo
+
+                stamp.Visibility = Visibility.Hidden;
                 Show();
                 Activate();
             }
             else if (detachedTicks == 2 && wasAttached)
             {
                 wasAttached = false;
-
-                // laukų nekeičiame: atkabinus užsakymo duomenų žaidimas gali nebeduoti
+                if (hasTime) SetTime("unloadArr", gameTime);   // atvykimas iškrovimui
                 Show();
                 Activate();
+
+                // AUTOMATINIS SIUNTIMAS Į DISCORD, KAI PRISTATOMA IR ATJUNGIAMA PRIEKABA:
+                _ = SendCmrToDiscordAsync();
             }
         }
         catch (HttpRequestException)
@@ -505,6 +606,74 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Debug.WriteLine("Telemetrija: " + ex.Message);
+        }
+    }
+
+    // =====================================================================
+    //  DISCORD WEBHOOK
+    // =====================================================================
+
+    async Task SendCmrToDiscordAsync()
+    {
+        string webhookUrl = "";
+        try
+        {
+            if (File.Exists(SettingsPath))
+            {
+                var jsonContent = File.ReadAllText(SettingsPath);
+                using var doc = JsonDocument.Parse(jsonContent);
+                if (doc.RootElement.TryGetProperty("discordWebhookUrl", out var val))
+                {
+                    webhookUrl = val.GetString() ?? "";
+                }
+            }
+        }
+        catch { }
+
+        if (string.IsNullOrEmpty(webhookUrl)) return;
+
+        try
+        {
+            // 1. Padarome CMR formos (Canvas) nuotrauką
+            RenderTargetBitmap renderBitmap = new RenderTargetBitmap(
+                (int)Form.Width, (int)Form.Height, 96d, 96d, PixelFormats.Pbgra32);
+            renderBitmap.Render(Form);
+
+            BitmapEncoder encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(renderBitmap));
+
+            byte[] photoBytes;
+            using (MemoryStream ms = new MemoryStream())
+            {
+                encoder.Save(ms);
+                photoBytes = ms.ToArray();
+            }
+
+            // 2. Paruošiame duomenis siuntimui į Discord
+            using (var client = new HttpClient())
+            using (var formData = new MultipartFormDataContent())
+            {
+                var imageContent = new ByteArrayContent(photoBytes);
+                imageContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                formData.Add(imageContent, "file", "cmr_waybill.png");
+
+                string driverName = F.TryGetValue("driverName", out var dBox) ? dBox.Text.Trim() : "Nenurodytas";
+                string message = "🚛 **Naujas reisas pristatytas!**\n" +
+                                 $"👤 Vairuotojas: {driverName}";
+
+                formData.Add(new StringContent(message), "content");
+
+                // 3. Siunčiame užklausą
+                HttpResponseMessage response = await client.PostAsync(webhookUrl, formData);
+                if (response.IsSuccessStatusCode)
+                {
+                    System.Diagnostics.Debug.WriteLine("CMR sėkmingai išsiųstas į Discord!");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("Klaida siunčiant į Discord: " + ex.Message);
         }
     }
 
